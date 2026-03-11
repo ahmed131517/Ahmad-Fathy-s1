@@ -1,0 +1,8 @@
+{
+  "name": "Shamela-AI",
+  "description": "An intelligent Islamic library with semantic search, AI research assistant, and OCR capabilities.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
