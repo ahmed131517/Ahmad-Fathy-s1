@@ -7,9 +7,10 @@ interface AutoMindmapModalProps {
   content: string;
   title: string;
   onClose: () => void;
+  selectedModel: string;
 }
 
-export function AutoMindmapModal({ content, title, onClose }: AutoMindmapModalProps) {
+export function AutoMindmapModal({ content, title, onClose, selectedModel }: AutoMindmapModalProps) {
   const [mindmapData, setMindmapData] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -24,7 +25,7 @@ export function AutoMindmapModal({ content, title, onClose }: AutoMindmapModalPr
         "${content.substring(0, 3000)}" // Limit to avoid token limits for this demo
         `;
         
-        const response = await geminiService.generateText(prompt);
+        const response = await geminiService.generateText(prompt, selectedModel);
         setMindmapData(response);
       } catch (error) {
         console.error("Failed to generate mindmap:", error);
@@ -35,7 +36,7 @@ export function AutoMindmapModal({ content, title, onClose }: AutoMindmapModalPr
     };
 
     generateMindmap();
-  }, [content]);
+  }, [content, selectedModel]);
 
   // A simple function to render markdown list as a visual tree
   const renderTree = (text: string) => {

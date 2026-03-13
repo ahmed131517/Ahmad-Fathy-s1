@@ -22,6 +22,7 @@ export interface Book {
   related_books?: { id: number | string; relation: string; title: string }[];
   format?: string;
   dateAdded?: number;
+  versions?: { id: string; name: string; content: string }[];
 }
 
 export interface Edition {

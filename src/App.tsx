@@ -25,6 +25,8 @@ import {
   Loader2,
   X,
   Plus,
+  Minus,
+  Type,
   Home,
   Compass,
   LogOut,
@@ -62,18 +64,24 @@ import {
   Wand2,
   GitMerge,
   FileCheck,
-  Database
+  Database,
+  GraduationCap,
+  AlignRight,
+  BrainCircuit
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as d3 from 'd3';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { geminiService } from './services/geminiService';
-import { searchChunks, getBook, getAllBooks as getLocalBooks, addMCQ } from './services/db';
+import { searchChunks, getBook, getAllBooks as getLocalBooks, addMCQ, saveAnnotation, addNote, addBook, dbService } from './services/db';
 import { InteractiveReader } from './components/InteractiveReader';
 import { AutoMindmapModal } from './components/AutoMindmapModal';
 import { Timeline } from './components/Timeline';
 import { LibraryManager } from './components/LibraryManager';
+import { VoiceSearch } from './components/VoiceSearch';
+import { AIResearchAssistant } from './components/AIResearchAssistant';
+import { OCRModal } from './components/OCRModal';
 import { Book, Chunk, ChatMessage, BookRelationship, Chapter, MCQ } from './types';
 
 function cn(...inputs: ClassValue[]) {
@@ -84,23 +92,32 @@ export default function App() {
   const [books, setBooks] = useState<Book[]>([]);
   const [selectedBook, setSelectedBook] = useState<Book | null>(null);
   const [activeTab, setActiveTab] = useState('home');
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-  const [chatInput, setChatInput] = useState('');
   const [isDeepThinking, setIsDeepThinking] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
   const [fontSize, setFontSize] = useState(22);
   const [fontFamily, setFontFamily] = useState('font-amiri');
+  const [lineHeight, setLineHeight] = useState(1.8);
+  const [letterSpacing, setLetterSpacing] = useState(0);
+  const [textAlign, setTextAlign] = useState<'justify' | 'right'>('justify');
+  const [isPenToolActive, setIsPenToolActive] = useState(false);
+  const [penColor, setPenColor] = useState('#ef4444');
+  const [annotations, setAnnotations] = useState<{ id: string; paths: string[] } | null>(null);
+  const [marginNotes, setMarginNotes] = useState<any[]>([]);
+  const [activeVersionId, setActiveVersionId] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [isScraping, setIsScraping] = useState(false);
   const [navMode, setNavMode] = useState<'tree' | 'map'>('tree');
   const [hoveredBook, setHoveredBook] = useState<Book | null>(null);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [isTimelineOpen, setIsTimelineOpen] = useState(true);
   const [showPdfSync, setShowPdfSync] = useState(false);
   const [relationships, setRelationships] = useState<BookRelationship[]>([]);
   const [activeChapter, setActiveChapter] = useState<Chapter | null>(null);
+  const [selectedModel, setSelectedModel] = useState('gemini-3.1-pro-preview');
 
   const [showBookTree, setShowBookTree] = useState(true);
-  const [showAIAssistant, setShowAIAssistant] = useState(true);
+  const [showAIAssistant, setShowAIAssistant] = useState(false);
   const [showMindmap, setShowMindmap] = useState(false);
   const [researchMode, setResearchMode] = useState(false);
   const [omniSearchOpen, setOmniSearchOpen] = useState(false);
@@ -115,11 +132,86 @@ export default function App() {
   const [menuPosition, setMenuPosition] = useState<{ x: number; y: number } | null>(null);
   const [mcqModalOpen, setMcqModalOpen] = useState(false);
   const [currentMCQs, setCurrentMCQs] = useState<MCQ | null>(null);
+  const [aiResult, setAiResult] = useState<{ type: string; content: string; isLoading: boolean } | null>(null);
+  const [mcqRefreshKey, setMcqRefreshKey] = useState(0);
   const [showSettings, setShowSettings] = useState(false);
   const [showEditor, setShowEditor] = useState(false);
   const [isLibraryManagerOpen, setIsLibraryManagerOpen] = useState(false);
+  const [showOCRModal, setShowOCRModal] = useState(false);
+  const [showReaderSettings, setShowReaderSettings] = useState(false);
+  const [showTypographySettings, setShowTypographySettings] = useState(true);
+  const [searchSuggestions, setSearchSuggestions] = useState<string[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
 
-  // Keyboard shortcuts
+  const [studyMode, setStudyMode] = useState(false);
+
+  const toggleStudyMode = () => {
+    setStudyMode(!studyMode);
+    // You can add more study mode specific logic here later
+  };
+
+  const toggleResearchMode = () => {
+    const newMode = !researchMode;
+    setResearchMode(newMode);
+    
+    if (newMode) {
+      // Enable advanced research features
+      setShowAIAssistant(true);
+      setShowPdfSync(true);
+      setNavMode('map');
+    } else {
+      // Revert to normal reading mode
+      setShowAIAssistant(false);
+      setShowPdfSync(false);
+      setNavMode('tree');
+    }
+  };
+
+  const handleSaveOCRToLibrary = async (title: string, content: string) => {
+    const newBook: Book = {
+      id: crypto.randomUUID(),
+      title,
+      author: 'مستخرج آلياً',
+      source_type: 'file',
+      content,
+      created_at: new Date().toISOString(),
+      is_indexed: false,
+      has_pdf: false,
+      has_notes: false,
+      category: 'مستخرجات OCR',
+      dateAdded: Date.now()
+    };
+    
+    await addBook(newBook);
+    await fetchBooks();
+    handleBookSelect(newBook);
+  };
+
+  const handleAiAction = async (action: 'explain' | 'parse' | 'diacritize' | 'lookup') => {
+    setAiResult({ type: action, content: '', isLoading: true });
+    try {
+      let prompt = '';
+      switch (action) {
+        case 'explain':
+          prompt = `اشرح النص التالي بأسلوب مبسط وواضح:\n\n"${selectedText}"`;
+          break;
+        case 'parse':
+          prompt = `قم بإعراب الجملة التالية إعراباً مفصلاً:\n\n"${selectedText}"`;
+          break;
+        case 'diacritize':
+          prompt = `قم بتشكيل النص التالي تشكيلاً كاملاً دقيقاً:\n\n"${selectedText}"`;
+          break;
+        case 'lookup':
+          prompt = `أعطني نبذة مختصرة تعريفية عن العلم أو المصطلح التالي:\n\n"${selectedText}"`;
+          break;
+      }
+      const response = await geminiService.generateText(prompt, selectedModel);
+      setAiResult({ type: action, content: response, isLoading: false });
+    } catch (e) {
+      console.error(e);
+      setAiResult({ type: action, content: 'حدث خطأ.', isLoading: false });
+    }
+  };
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
@@ -135,6 +227,14 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
+  const resetFormatting = () => {
+    setFontSize(22);
+    setFontFamily('font-amiri');
+    setLineHeight(1.8);
+    setLetterSpacing(0);
+    setTextAlign('justify');
+  };
+
   const themes = {
     day: 'bg-[#f5f5f0] text-brand-ink',
     night: 'bg-[#1a1a1a] text-gray-200',
@@ -148,8 +248,36 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [chatMessages]);
+    if (searchQuery.length > 1) {
+      const suggestions = books
+        .filter(b => b.title.includes(searchQuery) || b.author.includes(searchQuery))
+        .map(b => b.title)
+        .slice(0, 5);
+      
+      const commonQueries = [
+        'ما رأي الشافعية في زكاة الحلي؟',
+        'شرح حديث إنما الأعمال بالنيات',
+        'ترجمة الإمام البخاري',
+        'أصول الفقه عند المالكية'
+      ].filter(q => q.includes(searchQuery));
+
+      setSearchSuggestions([...new Set([...suggestions, ...commonQueries])]);
+      setShowSuggestions(true);
+    } else {
+      setShowSuggestions(false);
+    }
+  }, [searchQuery, books]);
+
+  useEffect(() => {
+    const handleSelectionChange = () => {
+      const selection = window.getSelection();
+      if (!selection || selection.toString().trim().length === 0) {
+        setMenuPosition(null);
+      }
+    };
+    document.addEventListener('selectionchange', handleSelectionChange);
+    return () => document.removeEventListener('selectionchange', handleSelectionChange);
+  }, []);
 
   useEffect(() => {
     const handleGlobalCopy = (e: ClipboardEvent) => {
@@ -167,12 +295,7 @@ export default function App() {
 
   const fetchBooks = async () => {
     try {
-      const res = await fetch('/api/books');
-      const apiBooks = await res.json();
-      
-      const localBooks = await getLocalBooks();
-      
-      const allBooks = [...localBooks, ...apiBooks];
+      const allBooks = await dbService.getBooks();
       setBooks(allBooks);
       
       if (allBooks.length > 0 && !selectedBook) {
@@ -184,12 +307,7 @@ export default function App() {
       const relData = await relRes.json();
       setRelationships(relData);
     } catch (e) {
-      console.warn("Failed to fetch API books, loading local books only.");
-      const localBooks = await getLocalBooks();
-      setBooks(localBooks);
-      if (localBooks.length > 0 && !selectedBook) {
-        handleBookSelect(localBooks[0]);
-      }
+      console.warn("Failed to fetch books:", e);
     }
   };
 
@@ -208,54 +326,6 @@ export default function App() {
       }
     } catch (e) {
       setSelectedBook(book);
-    }
-  };
-
-  const handleChat = async () => {
-    if (!chatInput.trim()) return;
-    const userMsg = chatInput;
-    setChatInput('');
-    setChatMessages(prev => [...prev, { role: 'user', content: userMsg }]);
-    setIsLoading(true);
-
-    try {
-      const embedding = await geminiService.generateEmbedding(userMsg);
-      
-      // Search local IndexedDB chunks
-      const localChunks = await searchChunks(embedding, 3);
-      
-      let context = '';
-      if (localChunks.length > 0) {
-        // Fetch book titles for context
-        const chunksWithTitles = await Promise.all(localChunks.map(async (chunk) => {
-          const book = await getBook(chunk.book_id);
-          return `[${book?.title || 'Unknown Book'}]: ${chunk.content}`;
-        }));
-        context = chunksWithTitles.join('\n\n');
-      } else {
-        // Fallback to API search if no local chunks (for demo purposes)
-        try {
-          const searchRes = await fetch('/api/search', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ queryEmbedding: embedding, limit: 3 }),
-          });
-          if (searchRes.ok) {
-            const contextChunks: Chunk[] = await searchRes.json();
-            context = contextChunks.map(c => `[${c.bookTitle}, Page ${c.page_number}]: ${c.content}`).join('\n\n');
-          }
-        } catch (e) {
-          console.warn("API search failed, continuing without context.");
-        }
-      }
-
-      const response = await geminiService.chat(userMsg, context, isDeepThinking);
-      setChatMessages(prev => [...prev, { role: 'assistant', content: response || 'No response' }]);
-    } catch (e) {
-      console.error(e);
-      setChatMessages(prev => [...prev, { role: 'assistant', content: 'Error communicating with AI.' }]);
-    } finally {
-      setIsLoading(false);
     }
   };
 
@@ -302,58 +372,102 @@ export default function App() {
     }
   };
 
-  const handleOCR = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setIsLoading(true);
-    const reader = new FileReader();
-    reader.onloadend = async () => {
-      const base64 = (reader.result as string).split(',')[1];
-      const text = await geminiService.ocr(base64);
-      setChatMessages(prev => [...prev, { role: 'assistant', content: `OCR Result:\n\n${text}` }]);
-      setIsLoading(false);
-    };
-    reader.readAsDataURL(file);
-  };
-
   return (
     <div 
-      className={`flex flex-col h-screen w-full ${themes[activeTheme]} overflow-hidden font-amiri transition-colors duration-500`}
-      onMouseUp={(e) => {
-        const selection = window.getSelection();
-        if (selection && selection.toString().length > 10) {
-          setSelectedText(selection.toString());
-          setMenuPosition({ x: e.clientX, y: e.clientY });
-        } else {
-          setMenuPosition(null);
-        }
-      }}
+      className={`flex h-screen w-full ${themes[activeTheme]} overflow-hidden font-amiri transition-colors duration-500`}
+      dir="rtl"
     >
-      {menuPosition && (
+      {/* Icon Sidebar */}
+      <div className="w-16 bg-brand-olive text-white flex flex-col items-center py-4 gap-6 z-[100] shadow-xl shrink-0">
+        <button 
+          onClick={() => setActiveTab('home')}
+          className={cn("p-3 rounded-xl transition-colors", activeTab === 'home' ? "bg-white/20 text-white" : "text-white/70 hover:bg-white/10 hover:text-white")} 
+          title="الرئيسية"
+        >
+          <Home size={20} />
+        </button>
+        <button 
+          onClick={() => setActiveTab('explore')}
+          className={cn("p-3 rounded-xl transition-colors", activeTab === 'explore' ? "bg-white/20 text-white" : "text-white/70 hover:bg-white/10 hover:text-white")} 
+          title="استكشاف"
+        >
+          <Compass size={20} />
+        </button>
+        <button 
+          onClick={() => {
+            setActiveTab('books');
+            setIsLibraryManagerOpen(true);
+          }}
+          className={cn("p-3 rounded-xl transition-colors", activeTab === 'books' ? "bg-white/20 text-white" : "text-white/70 hover:bg-white/10 hover:text-white")} 
+          title="الكتب"
+        >
+          <Library size={20} />
+        </button>
+        <button 
+          onClick={toggleStudyMode}
+          className={cn("p-3 rounded-xl transition-colors", studyMode ? "bg-white/20 text-white" : "text-white/70 hover:bg-white/10 hover:text-white")} 
+          title="وضع الدراسة"
+        >
+          <GraduationCap size={20} />
+        </button>
+        <div className="flex-1" />
+        <button 
+          onClick={() => setShowSettings(true)}
+          className="p-3 rounded-xl text-white/70 hover:bg-white/10 hover:text-white transition-colors" 
+          title="الإعدادات"
+        >
+          <Settings size={20} />
+        </button>
+      </div>
+
+      {/* Main Content Area */}
+      <div 
+        className="flex-1 flex flex-col overflow-hidden relative"
+        onMouseUp={(e) => {
+          const selection = window.getSelection();
+          if (selection && selection.toString().trim().length > 0) {
+            const range = selection.getRangeAt(0);
+            const rect = range.getBoundingClientRect();
+            setSelectedText(selection.toString());
+            setMenuPosition({ 
+              x: rect.left + rect.width / 2, 
+              y: rect.top 
+            });
+          } else {
+            setMenuPosition(null);
+          }
+        }}
+      >
+        {menuPosition && !aiResult && (
         <SelectionMenu
           x={menuPosition.x}
           y={menuPosition.y}
           onClose={() => setMenuPosition(null)}
           onCreateMCQs={async () => {
-            setIsLoading(true);
+            setAiResult({ type: 'generateMcqs', content: '', isLoading: true });
             try {
-              const mcqs = await geminiService.generateMCQs(selectedText);
+              const mcqs = await geminiService.generateMCQs(selectedText, selectedModel);
               setCurrentMCQs({
                 id: crypto.randomUUID(),
                 book_id: selectedBook?.id || 'unknown',
                 page_number: 0,
-                text_range: selectedText.substring(0, 50),
+                text_range: selectedText,
                 questions: mcqs.questions,
                 answered: false,
                 correct: false
               });
+              setAiResult(null);
+              setMenuPosition(null);
               setMcqModalOpen(true);
             } catch (e) {
               console.error(e);
-            } finally {
-              setIsLoading(false);
+              setAiResult({ type: 'generateMcqs', content: 'حدث خطأ أثناء توليد الأسئلة.', isLoading: false });
             }
           }}
+          onExplain={() => handleAiAction('explain')}
+          onParse={() => handleAiAction('parse')}
+          onDiacritize={() => handleAiAction('diacritize')}
+          onLookup={() => handleAiAction('lookup')}
         />
       )}
       {mcqModalOpen && currentMCQs && (
@@ -363,8 +477,44 @@ export default function App() {
           onSave={async (mcq) => {
             await addMCQ(mcq);
             setMcqModalOpen(false);
+            setMcqRefreshKey(prev => prev + 1);
           }}
         />
+      )}
+      {aiResult && (
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: 10 }}
+          className="ai-result-popup fixed z-[100] bg-white rounded-xl shadow-2xl border border-black/10 w-80 max-h-96 flex flex-col overflow-hidden"
+          style={{
+            top: menuPosition ? menuPosition.y + 50 : 100,
+            left: menuPosition ? menuPosition.x : 100,
+          }}
+        >
+          <div className="bg-gray-50 px-4 py-3 border-b border-black/5 flex items-center justify-between">
+            <span className="text-sm font-bold text-brand-olive flex items-center gap-2">
+              {aiResult.type === 'explain' && <><MessageSquare size={14} /> شرح النص</>}
+              {aiResult.type === 'parse' && <><AlignRight size={14} /> الإعراب</>}
+              {aiResult.type === 'diacritize' && <><Type size={14} /> التشكيل</>}
+              {aiResult.type === 'lookup' && <><Search size={14} /> بحث/تعريف</>}
+              {aiResult.type === 'generateMcqs' && <><BrainCircuit size={14} /> توليد أسئلة</>}
+            </span>
+            <button onClick={() => { setAiResult(null); setMenuPosition(null); }} className="text-gray-400 hover:text-gray-600">
+              <X size={16} />
+            </button>
+          </div>
+          <div className="p-4 overflow-y-auto text-sm leading-relaxed text-gray-700">
+            {aiResult.isLoading ? (
+              <div className="flex flex-col items-center justify-center py-8 text-brand-olive">
+                <Loader2 size={24} className="animate-spin mb-2" />
+                <span className="text-xs">جاري المعالجة الذكية...</span>
+              </div>
+            ) : (
+              <div className="whitespace-pre-wrap font-amiri text-base">{aiResult.content}</div>
+            )}
+          </div>
+        </motion.div>
       )}
       {/* 1. Menu Bar (Dropdowns) */}
       <div className="h-8 bg-white/40 backdrop-blur-md border-b border-black/5 flex items-center px-4 gap-6 text-xs z-50 select-none">
@@ -404,6 +554,7 @@ export default function App() {
             items={[
               { label: 'إعدادات Ollama', icon: <Cpu size={14} />, onClick: () => setShowSettings(true) },
               { label: 'تحديث الفهرس الدلالي', icon: <Search size={14} />, onClick: () => {} },
+              { label: 'استخراج نص من صورة (OCR)', icon: <FileText size={14} />, onClick: () => setShowOCRModal(true) },
             ]}
           />
         </div>
@@ -414,7 +565,7 @@ export default function App() {
         <div className="flex items-center gap-3">
           <button 
             onClick={() => setIsLibraryManagerOpen(true)}
-            className="flex items-center gap-2 px-4 py-2.5 bg-brand-olive text-white rounded-xl shadow-lg shadow-brand-olive/20 hover:scale-105 transition-transform font-bold text-sm"
+            className="flex items-center gap-2 px-4 py-2.5 bg-brand-olive text-white rounded-xl shadow-lg shadow-brand-olive/20 hover:scale-105 transition-transform font-bold text-sm relative z-[9999]"
           >
             <Library size={18} />
             <span>إدارة المكتبة</span>
@@ -450,16 +601,51 @@ export default function App() {
             type="text" 
             placeholder="بحث في الكتب، المؤلفين، أو اسأل الذكاء الاصطناعي... (Ctrl + K)"
             className="w-full h-11 bg-brand-bg/50 border border-black/5 rounded-2xl pr-12 pl-4 text-sm focus:outline-none focus:ring-2 focus:ring-brand-olive/20 focus:bg-white transition-all text-right"
-            onFocus={() => setOmniSearchOpen(true)}
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onFocus={() => {
+              setOmniSearchOpen(true);
+              setShowSuggestions(true);
+            }}
           />
-          <div className="absolute left-3 inset-y-0 flex items-center">
+          <AnimatePresence>
+            {showSuggestions && searchSuggestions.length > 0 && omniSearchOpen && (
+              <motion.div 
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                className="absolute top-full left-0 right-0 mt-2 bg-white rounded-2xl shadow-xl border border-black/5 overflow-hidden z-[60] font-amiri"
+              >
+                {searchSuggestions.map((s, i) => (
+                  <button
+                    key={i}
+                    onClick={() => {
+                      setSearchQuery(s);
+                      setShowSuggestions(false);
+                    }}
+                    className="w-full text-right px-6 py-3 hover:bg-brand-olive/5 flex items-center justify-between group transition-colors"
+                  >
+                    <span className="text-gray-400 group-hover:text-brand-olive"><Search size={14} /></span>
+                    <span className="text-sm text-gray-700">{s}</span>
+                  </button>
+                ))}
+              </motion.div>
+            )}
+          </AnimatePresence>
+          <div className="absolute left-3 inset-y-0 flex items-center gap-2">
+            <VoiceSearch 
+              onResult={(text) => {
+                setSearchQuery(text);
+                setOmniSearchOpen(true);
+              }} 
+            />
             <kbd className="px-2 py-1 bg-gray-100 border border-black/10 rounded text-[10px] text-gray-400 font-sans">Ctrl K</kbd>
           </div>
         </div>
 
         <div className="flex items-center gap-3">
           <button 
-            onClick={() => setResearchMode(!researchMode)}
+            onClick={toggleResearchMode}
             className={`flex items-center gap-2 px-4 py-2 rounded-xl border transition-all ${researchMode ? 'bg-brand-olive text-white border-brand-olive shadow-md' : 'bg-white border-black/5 text-gray-600 hover:bg-gray-50'}`}
           >
             <Zap size={16} className={researchMode ? 'animate-pulse' : ''} />
@@ -516,7 +702,10 @@ export default function App() {
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
                       />
-                      <Filter className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+                      <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-2">
+                        <VoiceSearch onResult={(text) => setSearchQuery(text)} />
+                        <Filter className="text-gray-400" size={18} />
+                      </div>
                     </div>
 
                     <div className="space-y-2 mb-8">
@@ -629,11 +818,170 @@ export default function App() {
                 <FileText size={20} />
               </button>
               <button className="p-2 hover:bg-brand-bg rounded-xl text-gray-400"><X size={20} /></button>
+              <button 
+                onClick={() => setShowMindmap(true)}
+                className="flex items-center gap-2 px-3 py-1.5 bg-brand-olive/10 text-brand-olive rounded-lg text-xs font-bold hover:bg-brand-olive/20 transition-colors"
+                title="توليد خريطة ذهنية للفصل"
+              >
+                <Network size={14} />
+                خريطة ذهنية
+              </button>
             </div>
             <h2 className="text-xl font-bold font-amiri">
               {selectedBook?.title || "منطقة القراءة"}
             </h2>
             <div className="flex items-center gap-2">
+               <div className="relative flex items-center gap-2">
+                 <AnimatePresence>
+                   {isPenToolActive && (
+                     <motion.div 
+                       initial={{ opacity: 0, width: 0 }}
+                       animate={{ opacity: 1, width: 'auto' }}
+                       exit={{ opacity: 0, width: 0 }}
+                       className="flex items-center gap-1 bg-white p-1 rounded-xl shadow-sm border border-black/5"
+                     >
+                       {['#ef4444', '#3b82f6', '#10b981', '#f59e0b', '#000000'].map(color => (
+                         <button
+                           key={color}
+                           onClick={() => setPenColor(color)}
+                           className={cn(
+                             "w-6 h-6 rounded-full transition-transform",
+                             penColor === color ? "scale-110 ring-2 ring-offset-1 ring-gray-400" : "hover:scale-110"
+                           )}
+                           style={{ backgroundColor: color }}
+                         />
+                       ))}
+                     </motion.div>
+                   )}
+                 </AnimatePresence>
+
+                 <button 
+                   onClick={() => setIsPenToolActive(!isPenToolActive)}
+                   className={cn("p-2 rounded-xl transition-all", isPenToolActive ? "bg-red-500 text-white" : "hover:bg-brand-bg text-gray-400")}
+                   title="أداة القلم"
+                 >
+                   <Edit3 size={20} />
+                 </button>
+
+                 <button 
+                   onClick={() => setShowReaderSettings(!showReaderSettings)}
+                   className={cn("p-2 rounded-xl transition-all", showReaderSettings ? "bg-brand-olive text-white" : "hover:bg-brand-bg text-gray-400")}
+                   title="إعدادات الخط"
+                 >
+                   <Type size={20} />
+                 </button>
+                 
+                 <AnimatePresence>
+                   {showReaderSettings && (
+                     <motion.div
+                       initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                       animate={{ opacity: 1, y: 0, scale: 1 }}
+                       exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                       className="absolute top-full left-0 mt-2 w-64 bg-white rounded-2xl shadow-2xl border border-black/5 p-4 z-[110] font-sans"
+                       dir="rtl"
+                     >
+                       <div className="space-y-4">
+                         <div>
+                           <label className="text-xs font-bold text-gray-400 block mb-2">حجم الخط ({fontSize}px)</label>
+                           <div className="flex items-center gap-3">
+                             <button onClick={() => setFontSize(Math.max(12, fontSize - 2))} className="p-1.5 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors">
+                               <Minus size={14} />
+                             </button>
+                             <input 
+                               type="range" 
+                               min="12" 
+                               max="48" 
+                               value={fontSize} 
+                               onChange={(e) => setFontSize(parseInt(e.target.value))}
+                               className="flex-1 accent-brand-olive"
+                             />
+                             <button onClick={() => setFontSize(Math.min(48, fontSize + 2))} className="p-1.5 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors">
+                               <Plus size={14} />
+                             </button>
+                           </div>
+                         </div>
+
+                         <div>
+                           <label className="text-xs font-bold text-gray-400 block mb-2">تباعد الأسطر ({lineHeight})</label>
+                           <input 
+                             type="range" 
+                             min="1" 
+                             max="3" 
+                             step="0.1"
+                             value={lineHeight} 
+                             onChange={(e) => setLineHeight(parseFloat(e.target.value))}
+                             className="w-full accent-brand-olive"
+                           />
+                         </div>
+
+                         <div>
+                           <label className="text-xs font-bold text-gray-400 block mb-2">تباعد الحروف ({letterSpacing}px)</label>
+                           <input 
+                             type="range" 
+                             min="0" 
+                             max="5" 
+                             step="0.5"
+                             value={letterSpacing} 
+                             onChange={(e) => setLetterSpacing(parseFloat(e.target.value))}
+                             className="w-full accent-brand-olive"
+                           />
+                         </div>
+
+                         <div>
+                           <label className="text-xs font-bold text-gray-400 block mb-2">محاذاة النص</label>
+                           <div className="flex bg-gray-100 p-1 rounded-lg">
+                             <button 
+                               onClick={() => setTextAlign('justify')}
+                               className={cn("flex-1 py-1 rounded text-[10px] font-bold transition-all", textAlign === 'justify' ? "bg-white shadow-sm text-brand-olive" : "text-gray-400")}
+                             >
+                               ضبط
+                             </button>
+                             <button 
+                               onClick={() => setTextAlign('right')}
+                               className={cn("flex-1 py-1 rounded text-[10px] font-bold transition-all", textAlign === 'right' ? "bg-white shadow-sm text-brand-olive" : "text-gray-400")}
+                             >
+                               يمين
+                             </button>
+                           </div>
+                         </div>
+                         
+                         <div>
+                           <label className="text-xs font-bold text-gray-400 block mb-2">نوع الخط</label>
+                           <div className="grid grid-cols-1 gap-2">
+                             {[
+                               { id: 'font-amiri', name: 'خط الأميري', class: 'font-amiri' },
+                               { id: 'font-scheherazade', name: 'خط شهرزاد', class: 'font-scheherazade' },
+                               { id: 'font-sans', name: 'خط النظام (Sans)', class: 'font-sans' }
+                             ].map(font => (
+                               <button
+                                 key={font.id}
+                                 onClick={() => setFontFamily(font.id)}
+                                 className={cn(
+                                   "w-full text-right px-3 py-2 rounded-xl border transition-all text-sm",
+                                   fontFamily === font.id 
+                                     ? "bg-brand-olive text-white border-brand-olive shadow-md" 
+                                     : "bg-gray-50 border-transparent hover:bg-gray-100 text-gray-700"
+                                 )}
+                               >
+                                 <span className={font.class}>{font.name}</span>
+                               </button>
+                             ))}
+                           </div>
+                         </div>
+
+                         <button 
+                           onClick={resetFormatting}
+                           className="w-full py-2 bg-red-50 text-red-600 rounded-xl text-xs font-bold hover:bg-red-100 transition-all border border-red-100"
+                         >
+                           إعادة ضبط التنسيق
+                         </button>
+                       </div>
+                     </motion.div>
+                   )}
+                 </AnimatePresence>
+               </div>
+
+
                <div className="flex bg-gray-100 p-1 rounded-lg text-[10px] font-bold">
                  <span className="px-2 py-1 bg-white rounded shadow-sm text-brand-olive">النص الرقمي</span>
                  <span className="px-2 py-1 text-gray-400">المخطوط</span>
@@ -643,41 +991,57 @@ export default function App() {
 
           <div className="flex-1 flex overflow-hidden relative">
             {/* Heatmap Sidebar */}
-            <HeatmapSidebar />
+            {isSidebarOpen && <HeatmapSidebar />}
+            
+            <button 
+              onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+              className={cn(
+                "absolute z-10 p-1 bg-white rounded-full shadow-sm border border-black/5 text-gray-400 hover:text-brand-olive transition-all",
+                isSidebarOpen ? "left-[250px] top-2" : "left-2 top-2"
+              )}
+              title="تبديل الشريط الجانبي"
+            >
+              {isSidebarOpen ? <ChevronLeft size={16} /> : <ChevronRight size={16} />}
+            </button>
 
-            <div className="flex-1 flex flex-col p-6 overflow-hidden">
-              <div className="flex items-center justify-between mb-6">
-                <div className="flex gap-2">
-                  <button className="p-2 bg-brand-bg rounded-xl text-gray-400"><ChevronLeft size={20} /></button>
-                  <button className="p-2 bg-brand-bg rounded-xl text-gray-400"><ChevronRight size={20} /></button>
-                </div>
-                <div className="flex items-center gap-4">
-                  <h3 className="text-lg font-bold font-amiri">{activeChapter?.title || "المقدمة"}</h3>
-                  <button 
-                    onClick={() => setShowMindmap(true)}
-                    className="flex items-center gap-2 px-3 py-1.5 bg-brand-olive/10 text-brand-olive rounded-lg text-xs font-bold hover:bg-brand-olive/20 transition-colors"
-                    title="توليد خريطة ذهنية للفصل"
-                  >
-                    <Network size={14} />
-                    خريطة ذهنية
-                  </button>
-                </div>
-                <div className="flex gap-2">
-                  <button className="p-2 bg-brand-bg rounded-xl text-gray-400"><ChevronLeft size={20} /></button>
-                  <button className="p-2 bg-brand-bg rounded-xl text-gray-400"><ChevronRight size={20} /></button>
-                </div>
+            <div className="flex-1 flex flex-col p-6">
+              <div className="flex items-center justify-between">
               </div>
 
               <div className="flex-1 flex gap-6 overflow-hidden">
                 {/* Digital Text Area */}
                 <div className={cn("flex-1 bg-brand-bg/30 rounded-[24px] overflow-hidden border border-black/5 transition-all flex flex-col", showPdfSync ? "w-1/2" : "w-full")}>
-                  <div className="flex-1 overflow-y-auto custom-scrollbar p-10">
+                  <div className="flex-1 overflow-y-auto custom-scrollbar p-4">
                     <div className="max-w-3xl mx-auto">
                       {selectedBook ? (
                         <InteractiveReader 
-                          content={selectedBook.content} 
+                          content={activeVersionId ? (selectedBook.versions?.find(v => v.id === activeVersionId)?.content || selectedBook.content) : selectedBook.content} 
                           fontSize={fontSize} 
                           fontFamily={fontFamily} 
+                          lineHeight={lineHeight}
+                          letterSpacing={letterSpacing}
+                          textAlign={textAlign}
+                          bookId={selectedBook.id}
+                          chapterId={activeChapter?.id || 'default'}
+                          refreshKey={mcqRefreshKey}
+                          isPenToolActive={isPenToolActive}
+                          penColor={penColor}
+                          onSaveAnnotation={(data) => {
+                            // Save to DB
+                            if (selectedBook) {
+                              saveAnnotation({
+                                id: `${selectedBook.id}-${activeChapter?.id || 'default'}`,
+                                bookId: selectedBook.id,
+                                chapterId: activeChapter?.id || 'default',
+                                data: data,
+                                createdAt: Date.now()
+                              });
+                            }
+                          }}
+                          versions={selectedBook.versions}
+                          activeVersionId={activeVersionId || undefined}
+                          onVersionChange={(id) => setActiveVersionId(id)}
+                          selectedModel={selectedModel}
                         />
                       ) : (
                         <div className="text-center text-gray-400 mt-20">جاري تحميل المحتوى...</div>
@@ -686,9 +1050,7 @@ export default function App() {
                   </div>
                   
                   {/* Timeline (Conditional based on book type or just show it for demo) */}
-                  {selectedBook && (
-                    <Timeline />
-                  )}
+                  {/* <Timeline isOpen={isTimelineOpen} onToggle={() => setIsTimelineOpen(!isTimelineOpen)} /> */}
                 </div>
 
                 {/* PDF Sync View */}
@@ -758,83 +1120,6 @@ export default function App() {
           </div>
         </main>
       )}
-
-      {/* Right Column: AI Assistant */}
-      <AnimatePresence>
-        {showAIAssistant && (
-          <motion.aside 
-            initial={{ width: 0, opacity: 0 }}
-            animate={{ width: 420, opacity: 1 }}
-            exit={{ width: 0, opacity: 0 }}
-            className="bg-white/40 backdrop-blur-md border-r border-black/5 flex flex-col shrink-0 overflow-hidden"
-          >
-            <div className="bg-gradient-to-br from-brand-olive to-brand-teal p-8 text-white relative overflow-hidden">
-              <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full -mr-16 -mt-16 blur-3xl" />
-              <div className="relative z-10 flex flex-col items-center text-center">
-                <div className="flex items-center justify-between w-full mb-4">
-                  <button onClick={() => setShowAIAssistant(false)} className="p-2 hover:bg-white/20 rounded-lg transition-colors">
-                    <ChevronLeft size={20} />
-                  </button>
-                  <h2 className="text-2xl font-bold font-amiri">مساعد الذكاء الاصطناعي</h2>
-                  <div className="w-8" />
-                </div>
-                <div className="p-3 bg-white/20 rounded-2xl mb-6">
-                  <Sparkles size={32} />
-                </div>
-                <p className="text-lg font-medium opacity-90">Ollama: Llama 3</p>
-              </div>
-            </div>
-
-            <div className="flex-1 flex flex-col p-6 overflow-hidden">
-              <div className="flex flex-wrap gap-2 mb-6">
-                <QuickAction label="لخص هذا الفصل" />
-                <QuickAction label="استخرج الفوائد التربوية" />
-                <QuickAction label="ارسم خريطة مفاهيم" />
-              </div>
-
-              <div className="flex-1 bg-brand-bg/30 rounded-[24px] p-6 overflow-y-auto custom-scrollbar border border-black/5 mb-6">
-                {chatMessages.length === 0 ? (
-                  <div className="h-full flex flex-col items-center justify-center text-center text-gray-400 space-y-4">
-                    <p className="text-sm leading-relaxed px-4">
-                      AI: *Based on your current section (Hadith 1):*
-                      The term 'Al-Niyyah' (intention) means...
-                    </p>
-                  </div>
-                ) : (
-                  <div className="space-y-4">
-                    {chatMessages.map((msg, i) => (
-                      <div key={i} className={cn("p-4 rounded-2xl text-sm leading-relaxed", msg.role === 'user' ? "bg-white border border-black/5 text-right" : "bg-brand-olive/5 text-brand-olive")}>
-                        {msg.content}
-                      </div>
-                    ))}
-                    {isLoading && <div className="text-xs text-brand-olive animate-pulse">Thinking...</div>}
-                    <div ref={chatEndRef} />
-                  </div>
-                )}
-              </div>
-
-              <div className="relative">
-                <div className="bg-brand-bg/50 rounded-[24px] p-2 flex items-center gap-2 border border-black/5">
-                  <input 
-                    type="text" 
-                    placeholder="Ask the AI about the current text..."
-                    className="flex-1 bg-transparent py-3 px-4 focus:outline-none text-sm text-right"
-                    value={chatInput}
-                    onChange={(e) => setChatInput(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && handleChat()}
-                  />
-                  <button 
-                    onClick={handleChat}
-                    className="bg-brand-olive text-white px-6 py-2.5 rounded-2xl font-bold hover:bg-brand-olive-light transition-all text-sm"
-                  >
-                    إرسال
-                  </button>
-                </div>
-              </div>
-            </div>
-          </motion.aside>
-        )}
-      </AnimatePresence>
 
       </div>
 
@@ -921,6 +1206,7 @@ export default function App() {
                     }
                   }}
                 />
+                <VoiceSearch onResult={(text) => setSearchQuery(text)} />
                 <div className="px-3 py-1 bg-brand-olive/10 text-brand-olive rounded-lg text-xs font-bold flex items-center gap-1 font-sans">
                   <Network size={14} /> Semantic
                 </div>
@@ -1004,7 +1290,11 @@ export default function App() {
       {/* System Settings Modal */}
       <AnimatePresence>
         {showSettings && (
-          <SystemSettingsModal onClose={() => setShowSettings(false)} />
+          <SystemSettingsModal 
+            onClose={() => setShowSettings(false)} 
+            selectedModel={selectedModel}
+            setSelectedModel={setSelectedModel}
+          />
         )}
       </AnimatePresence>
 
@@ -1015,6 +1305,7 @@ export default function App() {
             content={selectedBook.content} 
             title={activeChapter?.title || selectedBook.title} 
             onClose={() => setShowMindmap(false)} 
+            selectedModel={selectedModel}
           />
         )}
       </AnimatePresence>
@@ -1027,6 +1318,10 @@ export default function App() {
             onClose={() => setIsLibraryManagerOpen(false)} 
             onSelectBook={handleBookSelect as any}
             onLibraryUpdate={fetchBooks}
+            onShowOCR={() => {
+              setIsLibraryManagerOpen(false);
+              setShowOCRModal(true);
+            }}
           />
         )}
       </AnimatePresence>
@@ -1057,11 +1352,11 @@ export default function App() {
                 <div className="space-y-8">
                   <section>
                     <h3 className="text-sm font-bold text-gray-400 uppercase tracking-wider mb-4 flex items-center gap-2">
-                      <Upload size={16} /> رفع ملف (PDF, Word)
+                      <Upload size={16} /> رفع ملف (PDF, Word, EPUB)
                     </h3>
                     <form onSubmit={handleFileUpload} className="space-y-4">
                       <input type="text" name="title" placeholder="عنوان الكتاب" className="w-full bg-brand-bg rounded-xl p-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-olive/20" required />
-                      <input type="file" name="file" accept=".pdf,.docx,.txt" className="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-brand-olive/10 file:text-brand-olive hover:file:bg-brand-olive/20" required />
+                      <input type="file" name="file" accept=".pdf,.docx,.txt,.epub" className="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-brand-olive/10 file:text-brand-olive hover:file:bg-brand-olive/20" required />
                       <button 
                         type="submit" 
                         disabled={isUploading}
@@ -1100,6 +1395,35 @@ export default function App() {
           </div>
         )}
       </AnimatePresence>
+
+      <AIResearchAssistant 
+        isOpen={showAIAssistant} 
+        onClose={() => setShowAIAssistant(false)} 
+      />
+
+      <motion.button
+        whileHover={{ scale: 1.1 }}
+        whileTap={{ scale: 0.9 }}
+        onClick={() => setShowAIAssistant(true)}
+        className="fixed bottom-8 left-8 w-14 h-14 bg-brand-olive text-white rounded-2xl shadow-2xl flex items-center justify-center z-[90] hover:bg-brand-olive/90 transition-all group"
+      >
+        <Sparkles size={24} />
+        <span className="absolute left-full ml-4 px-3 py-1.5 bg-gray-900 text-white text-xs rounded-lg opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none font-sans">
+          المساعد البحثي الذكي
+        </span>
+      </motion.button>
+
+      <OCRModal 
+        isOpen={showOCRModal} 
+        onClose={() => setShowOCRModal(false)}
+        onExtract={(text) => {
+          setSearchQuery(text);
+          setOmniSearchOpen(true);
+          setShowOCRModal(false);
+        }}
+        onSaveToLibrary={handleSaveOCRToLibrary}
+      />
+      </div>
     </div>
   );
 }
@@ -1351,7 +1675,7 @@ function ResearchEditor({ onClose }: { onClose: () => void }) {
   );
 }
 
-function SystemSettingsModal({ onClose }: { onClose: () => void }) {
+function SystemSettingsModal({ onClose, selectedModel, setSelectedModel }: { onClose: () => void, selectedModel: string, setSelectedModel: (model: string) => void }) {
   const [activeTab, setActiveTab] = useState<'data' | 'processing' | 'ai'>('data');
 
   return (
@@ -1516,11 +1840,14 @@ function SystemSettingsModal({ onClose }: { onClose: () => void }) {
                 <div className="p-5 border border-black/10 rounded-2xl">
                   <h4 className="font-bold mb-4 flex items-center gap-2"><Cpu size={18} /> النموذج اللغوي الكبير (LLM)</h4>
                   <p className="text-xs text-gray-500 mb-4">لاستخراج الإجابات وتلخيص الكتب.</p>
-                  <select className="w-full p-3 bg-gray-50 border border-black/10 rounded-xl text-sm font-medium outline-none focus:border-brand-olive">
-                    <option>Llama 3 (محلي - Offline)</option>
-                    <option>Mistral (محلي - Offline)</option>
-                    <option>GPT-4o (سحابي - API)</option>
-                    <option>Claude 3.5 Sonnet (سحابي - API)</option>
+                  <select 
+                    value={selectedModel}
+                    onChange={(e) => setSelectedModel(e.target.value)}
+                    className="w-full p-3 bg-gray-50 border border-black/10 rounded-xl text-sm font-medium outline-none focus:border-brand-olive"
+                  >
+                    <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro</option>
+                    <option value="ollama">Ollama</option>
+                    <option value="lm-studio">LM Studio</option>
                   </select>
                 </div>
               </div>
@@ -1680,10 +2007,13 @@ function LibraryExplorer({
                 <input 
                   type="text" 
                   placeholder="ابحث عن كتاب، مؤلف، أو مسألة علمية..."
-                  className="w-full bg-gray-50 border border-black/5 rounded-2xl py-4 pr-12 pl-4 focus:outline-none focus:ring-2 focus:ring-brand-olive/20 focus:border-brand-olive text-lg transition-all"
+                  className="w-full bg-gray-50 border border-black/5 rounded-2xl py-4 pr-12 pl-12 focus:outline-none focus:ring-2 focus:ring-brand-olive/20 focus:border-brand-olive text-lg transition-all"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                 />
+                <div className="absolute left-4 top-1/2 -translate-y-1/2">
+                  <VoiceSearch onResult={(text) => setSearchQuery(text)} />
+                </div>
               </div>
             </div>
 
